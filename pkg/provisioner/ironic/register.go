@@ -108,7 +108,8 @@ func (p *ironicProvisioner) Register(data provisioner.ManagementAccessData, cred
 	if ironicNode == nil {
 		p.log.Info("registering host in ironic")
 		var retry bool
-		ironicNode, retry, err = p.enrollNode(data, bmcAccess, driverInfo)
+		var applied, ignored []string
+		ironicNode, retry, applied, ignored, err = p.enrollNode(data, bmcAccess, driverInfo)
 		if err != nil {
 			result, err = transientError(err)
 			return result, "", err
@@ -117,6 +118,8 @@ func (p *ironicProvisioner) Register(data provisioner.ManagementAccessData, cred
 			result, err = retryAfterDelay(provisionRequeueDelay)
 			return result, "", err
 		}
+		result.AppliedHostProvisionerProperties = applied
+		result.IgnoredHostProvisionerProperties = ignored
 		// Store the ID so other methods can assume it is set and so
 		// we can find the node again later.
 		provID = ironicNode.UUID
@@ -238,7 +241,13 @@ func (p *ironicProvisioner) Register(data provisioner.ManagementAccessData, cred
 	}
 }
 
-func (p *ironicProvisioner) enrollNode(data provisioner.ManagementAccessData, bmcAccess bmc.AccessDetails, driverInfo map[string]any) (ironicNode *nodes.Node, retry bool, err error) {
+func (p *ironicProvisioner) enrollNode(data provisioner.ManagementAccessData, bmcAccess bmc.AccessDetails, driverInfo map[string]any) (ironicNode *nodes.Node, retry bool, applied, ignored []string, err error) {
+	properties := map[string]any{
+		"capabilities": buildCapabilitiesValue(nil, data.BootMode),
+		"cpu_arch":     data.CPUArchitecture,
+	}
+	applied, ignored = p.applyHostProvisionerProperties(properties, data.HostProvisionerProperties)
+
 	nodeCreateOpts := nodes.CreateOpts{
 		Driver:              bmcAccess.Driver(),
 		BIOSInterface:       bmcAccess.BIOSInterface(),
@@ -253,10 +262,7 @@ func (p *ironicProvisioner) enrollNode(data provisioner.ManagementAccessData, bm
 		RAIDInterface:       bmcAccess.RAIDInterface(),
 		VendorInterface:     bmcAccess.VendorInterface(),
 		DisablePowerOff:     &data.DisablePowerOff,
-		Properties: map[string]any{
-			"capabilities": buildCapabilitiesValue(nil, data.BootMode),
-			"cpu_arch":     data.CPUArchitecture,
-		},
+		Properties:          properties,
 	}
 
 	ironicNode, err = nodes.Create(p.ctx, p.client, nodeCreateOpts).Extract()
@@ -264,9 +270,9 @@ func (p *ironicProvisioner) enrollNode(data provisioner.ManagementAccessData, bm
 		p.publisher("Registered", "Registered new host")
 	} else if gophercloud.ResponseCodeIs(err, http.StatusConflict) {
 		p.log.Info("could not register host in ironic, busy")
-		return nil, true, nil
+		return nil, true, nil, nil, nil
 	} else {
-		return nil, true, fmt.Errorf("failed to register host in ironic: %w", err)
+		return nil, true, nil, nil, fmt.Errorf("failed to register host in ironic: %w", err)
 	}
 
 	// If we know the MAC, create a port. Otherwise we will have
@@ -274,11 +280,11 @@ func (p *ironicProvisioner) enrollNode(data provisioner.ManagementAccessData, bm
 	if p.bootMACAddress != "" {
 		err = p.createPXEEnabledNodePort(ironicNode.UUID, p.bootMACAddress)
 		if err != nil {
-			return nil, true, err
+			return nil, true, nil, nil, err
 		}
 	}
 
-	return ironicNode, false, nil
+	return ironicNode, false, applied, ignored, nil
 }
 
 func (p *ironicProvisioner) ensurePort(ironicNode *nodes.Node) error {

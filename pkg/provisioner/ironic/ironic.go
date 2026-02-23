@@ -47,6 +47,28 @@ const (
 	kernelParamsKey  = "kernel_append_params"
 )
 
+// allowedHostProvisionerProperties defines which properties users can override
+// via the BareMetalHost spec.hostProvisionerProperties field.
+var allowedHostProvisionerProperties = map[string]bool{
+	"vendor": true,
+}
+
+// applyHostProvisionerProperties applies allowed host provisioner properties to the
+// given properties map, logging a warning for any unsupported properties.
+// It returns the lists of applied and ignored property keys.
+func (p *ironicProvisioner) applyHostProvisionerProperties(properties map[string]any, hostProps map[string]string) (applied, ignored []string) {
+	for key, value := range hostProps {
+		if allowedHostProvisionerProperties[key] {
+			properties[key] = value
+			applied = append(applied, key)
+		} else {
+			p.log.Info("ignoring unsupported host provisioner property", "key", key, "value", value)
+			ignored = append(ignored, key)
+		}
+	}
+	return applied, ignored
+}
+
 type macAddressConflictError struct {
 	Address      string
 	ExistingNode string
@@ -337,6 +359,7 @@ func (p *ironicProvisioner) configureNode(data provisioner.ManagementAccessData,
 	if data.CPUArchitecture != "" {
 		opts["cpu_arch"] = data.CPUArchitecture
 	}
+	applied, ignored := p.applyHostProvisionerProperties(opts, data.HostProvisionerProperties)
 	updater.SetPropertiesOpts(opts, ironicNode)
 
 	_, success, result, err := p.tryUpdateNode(ironicNode, updater)
@@ -345,6 +368,8 @@ func (p *ironicProvisioner) configureNode(data provisioner.ManagementAccessData,
 	}
 
 	result, err = operationComplete()
+	result.AppliedHostProvisionerProperties = applied
+	result.IgnoredHostProvisionerProperties = ignored
 	if err != nil {
 		return result, err
 	}
