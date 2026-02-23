@@ -28,7 +28,7 @@ spec:
         - containerPort: 8443
           protocol: TCP
           name: https
-        image: quay.io/metal3-io/baremetal-operator
+        image: synthe102/baremetal-operator
         imagePullPolicy: Always
         env:
         - name: POD_NAME
